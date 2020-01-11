@@ -7,6 +7,7 @@ from .config import ConfigAccessBackend
 from .base import IAccessBackend, IMutableAccessBackend, get_pwd_context, DEFAULT_ROUNDS
 from .remote import RemoteAccessBackend
 from .sql import SQLAccessBackend
+from .remote_user import RemoteUserAccessBackend
 
 
 def includeme(config):
@@ -25,6 +26,8 @@ def includeme(config):
         dotted_name = "pypicloud.access.ldap_.LDAPAccessBackend"
     elif dotted_name == "aws_secrets_manager":
         dotted_name = AWSSecretsManagerAccessBackend
+    elif dotted_name == 'remote_user':
+        dotted_name = RemoteUserAccessBackend
     access_backend = resolver.maybe_resolve(dotted_name)
     kwargs = access_backend.configure(settings)
     config.add_request_method(
