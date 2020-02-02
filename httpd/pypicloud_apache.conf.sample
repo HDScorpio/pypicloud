@@ -1,0 +1,40 @@
+Listen 6543
+<VirtualHost *:6543>
+    WSGIApplicationGroup %{GLOBAL}
+    # NOTE: If used virtualenv append this: python-home=/path/to/venv
+    WSGIDaemonProcess pypicloud user=www-data group=www-data
+    WSGIScriptAlias / /usr/bin/pypicloud.wsgi
+    # WSGIScriptAlias / /path/to/venv/bin/pypicloud.wsgi
+
+    ### NOTE: comment config below if REMOTE_USER used ###
+    WSGIPassAuthorization On
+    <Files "pypicloud.wsgi">
+        WSGIProcessGroup pypicloud
+        Require all granted
+    </Files>
+
+    ### NOTE: use config below for REMOTE_USER ###
+    #WSGIPassAuthorization Off
+    #<Files "pypicloud.wsgi">
+    #    WSGIProcessGroup pypicloud
+    #    AuthType Basic
+    #    AuthName "PyPICloud authentication required"
+    #    AuthBasicProvider file
+    #    AuthUserFile "/etc/pypicloud/htpasswd"
+    #    Require valid-user
+    #</Files>
+    #
+    ## This endpoints not require authentication: allow pip search without auth
+    #<LocationMatch "/(health|pypi)">
+    #    Require all granted
+    #</LocationMatch>
+    #
+    ## This endpoints not require authentication in GET, HEAD and OPTIONS
+    ## methods: allow pip install/download witout auth
+    #<LocationMatch "/(simple|api/package/.+/.+)">
+    #    <RequireAny>
+    #        Require method GET HEAD OPTIONS
+    #        Require valid-user
+    #    </RequireAny>
+    #</LocationMatch>
+</VirtualHost>

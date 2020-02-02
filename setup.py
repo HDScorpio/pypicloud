@@ -101,6 +101,7 @@ if __name__ == "__main__":
             ],
             "paste.app_factory": ["main = pypicloud:main"],
         },
+        scripts=["bin/pypicloud.wsgi"],
         install_requires=REQUIREMENTS,
         tests_require=REQUIREMENTS + EXTRAS["test"],
         test_suite="tests",

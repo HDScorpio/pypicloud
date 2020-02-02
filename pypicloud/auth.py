@@ -127,6 +127,14 @@ class SessionAuthPolicy(object):
         return []
 
 
+class RemoteUserAuthPolicy(BasicAuthenticationPolicy):
+
+    """ Simple REMOTE_USER auth policy """
+
+    def authenticated_userid(self, request):
+        return request.environ.get('REMOTE_USER')
+
+
 def _is_logged_in(request):
     """ Check if there is a logged-in user in the session """
     return request.userid is not None
@@ -159,6 +167,7 @@ def includeme(config):
     config.set_authentication_policy(config.registry.authentication_policy)
     config.add_authentication_policy(SessionAuthPolicy())
     config.add_authentication_policy(BasicAuthenticationPolicy())
+    config.add_authentication_policy(RemoteUserAuthPolicy())
     config.add_request_method(authenticated_userid, name="userid", reify=True)
     config.add_request_method(_forbid, name="forbid")
     config.add_request_method(_request_login, name="request_login")
