@@ -51,7 +51,39 @@ class RedisCache(ICache):
             )
         kwargs["graceful_reload"] = asbool(settings.get("db.graceful_reload", False))
         db_url = settings.get("db.url")
-        kwargs["db"] = StrictRedis.from_url(db_url, decode_responses=True)
+        if "sentinel" in db_url:
+            from redis.sentinel import Sentinel
+            from six.moves.urllib.parse import urlparse
+
+            sentinel_kwargs = dict(decode_responses=True)
+            master_name = None
+            parsed_url = urlparse(db_url)
+
+            sentinels = [(parsed_url.hostname, int(parsed_url.port))]
+
+            if parsed_url.path:
+                sentinel_kwargs["db"] = int(parsed_url.path.strip('/'))
+
+            if parsed_url.password:
+                sentinel_kwargs["password"] = parsed_url.password
+
+            for query in parsed_url.query.split('&'):
+                key, value = query.split('=')
+                if key == "sentinel":
+                    master_name = value
+                elif key == "fallback":
+                    host, port = value.split(':')
+                    sentinels.append((host, int(port)))
+                elif key == "db":
+                    sentinel_kwargs["db"] = int(value)
+
+            if not master_name:
+                raise ValueError("Redis sentinel master name required")
+
+            sentinel_client = Sentinel(sentinels, **sentinel_kwargs)
+            kwargs["db"] = sentinel_client.master_for(master_name)
+        else:
+            kwargs["db"] = StrictRedis.from_url(db_url, decode_responses=True)
         return kwargs
 
     def redis_key(self, key):
