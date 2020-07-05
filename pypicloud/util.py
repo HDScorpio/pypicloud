@@ -1,23 +1,21 @@
 """ Utilities """
-import posixpath
+import logging
+import os
 import re
 import time
+import unicodedata
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-import distlib.locators
-import logging
-import six
-from distlib.locators import Locator, SimpleScrapingLocator
+from distlib.locators import Locator
 from distlib.util import split_filename
 from distlib.wheel import Wheel
-from six.moves.urllib.parse import urlparse  # pylint: disable=F0401,E0611
-
 
 LOG = logging.getLogger(__name__)
 ALL_EXTENSIONS = Locator.source_extensions + Locator.binary_extensions
 SENTINEL = object()
 
 
-def parse_filename(filename, name=None):
+def parse_filename(filename: str, name: Optional[str] = None) -> Tuple[str, str]:
     """ Parse a name and version out of a filename """
     version = None
     for ext in ALL_EXTENSIONS:
@@ -39,51 +37,26 @@ def parse_filename(filename, name=None):
     return normalize_name(name), version
 
 
-def normalize_name(name):
+def normalize_name(name: str) -> str:
     """ Normalize a python package name """
     # Lifted directly from PEP503:
     # https://www.python.org/dev/peps/pep-0503/#id4
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-class BetterScrapingLocator(SimpleScrapingLocator):
+def normalize_metadata(metadata: Dict[str, Union[str, bytes]]) -> None:
+    """Strip non-ASCII characters from metadata"""
+    for key, value in metadata.items():
+        if isinstance(value, bytes):
+            value = value.decode("utf-8")
 
-    """ Layer on top of SimpleScrapingLocator that allows preferring wheels """
-
-    prefer_wheel = True
-
-    def __init__(self, *args, **kw):
-        kw["scheme"] = "legacy"
-        super(BetterScrapingLocator, self).__init__(*args, **kw)
-
-    def locate(self, requirement, prereleases=False, wheel=True):
-        self.prefer_wheel = wheel
-        return super(BetterScrapingLocator, self).locate(requirement, prereleases)
-
-    def score_url(self, url):
-        t = urlparse(url)
-        filename = posixpath.basename(t.path)
-        return (
-            t.scheme == "https",
-            not (self.prefer_wheel ^ filename.endswith(".whl")),
-            "pypi.org" in t.netloc,
-            filename,
-        )
+        if isinstance(value, str):
+            metadata[key] = "".join(
+                c for c in unicodedata.normalize("NFKD", value) if ord(c) < 128
+            )
 
 
-# Distlib checks if wheels are compatible before returning them.
-# This is useful if you are attempting to install on the system running
-# distlib, but we actually want ALL wheels so we can display them to the
-# clients.  So we have to monkey patch the method. I'm sorry.
-def is_compatible(wheel, tags=None):
-    """ Hacked function to monkey patch into distlib """
-    return True
-
-
-distlib.locators.is_compatible = is_compatible
-
-
-def create_matcher(queries, query_type):
+def create_matcher(queries: List[str], query_type: str) -> Callable[[str], bool]:
     """
     Create a matcher for a list of queries
 
@@ -107,7 +80,12 @@ def create_matcher(queries, query_type):
         return lambda x: all((q in x.lower() for q in queries))
 
 
-def get_settings(settings, prefix, **kwargs):
+def get_environ_setting(settings: dict, key: str, default=None):
+    env_key = "PPC_" + key.upper().replace(".", "_")
+    return os.environ.get(env_key, settings.get(key, default))
+
+
+def get_settings(settings: dict, prefix: str, **kwargs) -> dict:
     """
     Convenience method for fetching settings
 
@@ -126,7 +104,7 @@ def get_settings(settings, prefix, **kwargs):
 
     """
     computed = {}
-    for name, fxn in six.iteritems(kwargs):
+    for name, fxn in kwargs.items():
         val = settings.get(prefix + name)
         if val is not None:
             computed[name] = fxn(val)
@@ -150,13 +128,15 @@ class TimedCache(dict):
 
     """
 
-    def __init__(self, cache_time, factory=None):
+    def __init__(
+        self, cache_time: Optional[int], factory: Optional[Callable[[Any], Any]] = None
+    ):
         super(TimedCache, self).__init__()
         if cache_time is not None and cache_time < 0:
             raise ValueError("cache_time cannot be negative")
         self._cache_time = cache_time
         self._factory = factory
-        self._times = {}
+        self._times = {}  # type: Dict[str, float]
 
     def _has_expired(self, key):
         """ Check if a key is both present and expired """
@@ -193,6 +173,7 @@ class TimedCache(dict):
                 value = self._factory(key)
                 if value is None:
                     raise
+                self[key] = value
             else:
                 raise
         return value

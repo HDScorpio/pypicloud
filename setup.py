@@ -1,9 +1,8 @@
 """ Setup file """
-from setuptools import setup, find_packages
-
 import os
 import re
 
+from setuptools import find_packages, setup
 
 HERE = os.path.abspath(os.path.dirname(__file__))
 README = open(os.path.join(HERE, "README.rst")).read()
@@ -16,9 +15,7 @@ REQUIREMENTS = [
     "boto3>=1.7.0",
     # beaker needs this
     "cryptography",
-    # We're doing enough subclassing and monkey patching to where we really do
-    # need to lock this in to a specific version.
-    "distlib==0.2.5",
+    "distlib",
     "paste",
     "passlib>=1.7",
     "pyramid",
@@ -27,7 +24,7 @@ REQUIREMENTS = [
     "pyramid_jinja2",
     "pyramid_rpc",
     "pyramid_tm",
-    "six",
+    "requests",
     "transaction",
     "zope.sqlalchemy",
 ]
@@ -37,6 +34,7 @@ EXTRAS = {
     "dynamo": ["flywheel >= 0.2.0"],
     "redis": ["redis"],
     "gcs": ["google-cloud-storage>=1.10.0"],
+    "azure-blob": ["azure-storage-blob>=12.3.1"],
 }
 
 EXTRAS["all_plugins"] = sum(EXTRAS.values(), [])
@@ -50,27 +48,27 @@ EXTRAS["test"] = EXTRAS["all_plugins"] + [
     "psycopg2-binary",
     "requests",
     "webtest",
+    "vcrpy",
 ]
 
 EXTRAS["server"] = ["waitress"]
-EXTRAS["lint"] = ["black", "pylint==2.3.1"]
+EXTRAS["lint"] = ["black", "pylint==2.3.1", "mypy", "sqlalchemy-stubs", "isort"]
 EXTRAS["doc"] = ["numpydoc", "sphinx", "sphinx_rtd_theme"]
 
 
 if __name__ == "__main__":
     setup(
         name="pypicloud",
-        version="1.0.13",
+        version="1.1.1",
         description="Private PyPI backed by S3",
         long_description=README + "\n\n" + CHANGES,
         classifiers=[
             "Programming Language :: Python",
-            "Programming Language :: Python :: 2",
-            "Programming Language :: Python :: 2.7",
             "Programming Language :: Python :: 3",
             "Programming Language :: Python :: 3.5",
             "Programming Language :: Python :: 3.6",
             "Programming Language :: Python :: 3.7",
+            "Programming Language :: Python :: 3.8",
             "Development Status :: 4 - Beta",
             "Framework :: Pyramid",
             "Intended Audience :: System Administrators",
@@ -86,6 +84,7 @@ if __name__ == "__main__":
         keywords="pypi s3 cheeseshop package",
         platforms="any",
         zip_safe=False,
+        python_requires=">=3.5",
         include_package_data=True,
         packages=find_packages(exclude=("tests",)),
         entry_points={

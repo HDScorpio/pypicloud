@@ -1,29 +1,28 @@
 """ Views for simple api calls that return json data """
-import posixpath
-
 import logging
-import six
+import posixpath
 from contextlib import closing
+from io import BytesIO
+from urllib.request import urlopen
 
 # pylint: disable=E0611,W0403
-from paste.httpheaders import CONTENT_DISPOSITION, CACHE_CONTROL
+from paste.httpheaders import CACHE_CONTROL, CONTENT_DISPOSITION
 
 # pylint: enable=E0611,W0403
-from pyramid.httpexceptions import HTTPNotFound, HTTPForbidden, HTTPBadRequest
+from pyramid.httpexceptions import HTTPBadRequest, HTTPForbidden, HTTPNotFound
 from pyramid.security import NO_PERMISSION_REQUIRED
 from pyramid.view import view_config
-from pyramid_duh import argify, addslash
-from six.moves.urllib.request import urlopen  # pylint: disable=F0401,E0611
+from pyramid_duh import addslash, argify
 
-from .login import handle_register_request
 from pypicloud.route import (
-    APIResource,
+    APIPackageFileResource,
     APIPackageResource,
     APIPackagingResource,
-    APIPackageFileResource,
+    APIResource,
 )
 from pypicloud.util import normalize_name
 
+from .login import handle_register_request
 
 LOG = logging.getLogger(__name__)
 
@@ -42,7 +41,7 @@ def all_packages(request, verbose=False):
     i = 0
     while i < len(packages):
         package = packages[i]
-        name = package if isinstance(package, six.string_types) else package["name"]
+        name = package if isinstance(package, str) else package["name"]
         if not request.access.has_permission(name, "read"):
             del packages[i]
             continue
@@ -68,14 +67,19 @@ def package_versions(context, request):
     }
 
 
-def fetch_dist(request, package_name, package_url):
+def fetch_dist(request, url, name, version, summary, requires_python):
     """ Fetch a Distribution and upload it to the storage backend """
-    filename = posixpath.basename(package_url)
-    url = urlopen(package_url)
-    with closing(url):
-        data = url.read()
+    filename = posixpath.basename(url)
+    handle = urlopen(url)
+    with closing(handle):
+        data = handle.read()
     # TODO: digest validation
-    return request.db.upload(filename, six.BytesIO(data), package_name), data
+    return (
+        request.db.upload(
+            filename, BytesIO(data), name, version, summary, requires_python
+        ),
+        data,
+    )
 
 
 @view_config(context=APIPackageFileResource, request_method="GET", permission="read")
@@ -88,22 +92,24 @@ def download_package(context, request):
         if not request.access.can_update_cache():
             return request.forbid()
         # If we are caching pypi, download the package from pypi and save it
-        dists = request.locator.get_project(context.name)
+        releases = request.locator.get_releases(context.name)
 
         dist = None
-        source_url = None
-        for version, url_set in six.iteritems(dists.get("urls", {})):
-            if dist is not None:
+        for release in releases:
+            if posixpath.basename(release["url"]) == context.filename:
+                dist = release
                 break
-            for url in url_set:
-                if posixpath.basename(url) == context.filename:
-                    source_url = url
-                    dist = dists[version]
-                    break
         if dist is None:
             return HTTPNotFound()
         LOG.info("Caching %s from %s", context.filename, request.fallback_simple)
-        package, data = fetch_dist(request, dist.name, source_url)
+        package, data = fetch_dist(
+            request,
+            dist["url"],
+            dist["name"],
+            dist["version"],
+            dist["summary"],
+            dist["requires_python"],
+        )
         disp = CONTENT_DISPOSITION.tuples(filename=package.filename)
         request.response.headers.update(disp)
         cache_control = CACHE_CONTROL.tuples(
@@ -136,10 +142,16 @@ def download_package(context, request):
     permission="write",
 )
 @argify
-def upload_package(context, request, content):
+def upload_package(context, request, content, summary=None, requires_python=None):
     """ Upload a package """
     try:
-        return request.db.upload(content.filename, content.file, name=context.name)
+        return request.db.upload(
+            content.filename,
+            content.file,
+            name=context.name,
+            summary=summary,
+            requires_python=requires_python,
+        )
     except ValueError as e:  # pragma: no cover
         return HTTPBadRequest(*e.args)
 
@@ -188,42 +200,3 @@ def change_password(request, old_password, new_password):
         return HTTPForbidden()
     request.access.edit_user_password(request.userid, new_password)
     return request.response
-
-
-@view_config(
-    context=APIResource,
-    name="fetch",
-    renderer="json",
-    permission=NO_PERMISSION_REQUIRED,
-)
-@argify(wheel=bool, prerelease=bool)
-def fetch_requirements(request, requirements, wheel=True, prerelease=False):
-    """
-    Fetch packages from the fallback_base_url
-
-    Parameters
-    ----------
-    requirements : str
-        Requirements in the requirements.txt format (with newlines)
-    wheel : bool, optional
-        If True, will prefer wheels (default True)
-    prerelease : bool, optional
-        If True, will allow prerelease versions (default False)
-
-    Returns
-    -------
-    pkgs : list
-        List of Package objects
-
-    """
-    if not request.access.can_update_cache():
-        return HTTPForbidden()
-    packages = []
-    for line in requirements.splitlines():
-        dist = request.locator.locate(line, prerelease, wheel)
-        if dist is not None:
-            try:
-                packages.append(fetch_dist(request, dist.name, dist.source_url)[0])
-            except ValueError:
-                pass
-    return {"pkgs": packages}

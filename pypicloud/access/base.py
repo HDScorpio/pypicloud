@@ -1,38 +1,75 @@
 """ The access backend object base class """
-from __future__ import unicode_literals
-
-import six
-import hmac
 import hashlib
+import hmac
 import time
 from collections import defaultdict
+from typing import Any, Dict, List, Optional, Set, Tuple
+
 from passlib.apps import LazyCryptContext
 from passlib.utils import sys_bits
 from pyramid.security import (
+    ALL_PERMISSIONS,
+    Allow,
     Authenticated,
+    Deny,
     Everyone,
     effective_principals,
-    Allow,
-    Deny,
-    ALL_PERMISSIONS,
 )
 from pyramid.settings import aslist
 
+from pypicloud.util import get_environ_setting
 
-DEFAULT_ROUNDS = 535000
+# Roughly tuned using https://bitbucket.org/ecollins/passlib/raw/default/choose_rounds.py
+# For 10ms. This differs from the passlib recommendation of 350ms due to the difference in use case
+DEFAULT_ROUNDS = {
+    "sha512_crypt__default_rounds": 20500,
+    "sha256_crypt__default_rounds": 16000,
+    "pbkdf2_sha512__default_rounds": 10500,
+    "pbkdf2_sha256__default_rounds": 13000,
+    "bcrypt__default_rounds": 7,
+    "argon2__default_rounds": 1,
+}
+SCHEMES = [
+    "sha512_crypt",
+    "sha256_crypt",
+    "pbkdf2_sha512",
+    "pbkdf2_sha256",
+    "bcrypt",
+    "argon2",
+]
+if sys_bits < 64:
+    SCHEMES.remove("sha512_crypt")
+    SCHEMES.remove("pbkdf2_sha512")
 
 
-def get_pwd_context(rounds=DEFAULT_ROUNDS):
+def get_pwd_context(
+    preferred_hash: Optional[str] = None, rounds: Optional[int] = None
+) -> LazyCryptContext:
     """ Create a passlib context for hashing passwords """
-    return LazyCryptContext(
-        schemes=["sha512_crypt", "sha256_crypt"],
-        default="sha256_crypt" if sys_bits < 64 else "sha512_crypt",
-        sha512_crypt__default_rounds=rounds,
-        sha256_crypt__default_rounds=rounds,
-    )
+    if preferred_hash is None or preferred_hash == "sha":
+        preferred_hash = "sha256_crypt" if sys_bits < 64 else "sha512_crypt"
+    if preferred_hash == "pbkdf2":
+        preferred_hash = "pbkdf2_sha256" if sys_bits < 64 else "pbkdf2_sha512"
+
+    if preferred_hash not in SCHEMES:
+        raise Exception(
+            "Password hash %r is not in the list of supported schemes" % preferred_hash
+        )
+
+    # Put the preferred hash at the beginning of the schemes list
+    schemes = list(SCHEMES)
+    schemes.remove(preferred_hash)
+    schemes.insert(0, preferred_hash)
+
+    # Override the default rounds of the preferred hash, if provided
+    default_rounds = dict(DEFAULT_ROUNDS)
+    if rounds is not None:
+        default_rounds[preferred_hash + "__default_rounds"] = rounds
+
+    return LazyCryptContext(schemes=schemes, default=schemes[0], **default_rounds)
 
 
-def group_to_principal(group):
+def group_to_principal(group: str) -> str:
     """ Convert a group to its corresponding principal """
     if group in (Everyone, Authenticated) or group.startswith("group:"):
         return group
@@ -44,7 +81,7 @@ def group_to_principal(group):
         return "group:" + group
 
 
-def groups_to_principals(groups):
+def groups_to_principals(groups: List[str]) -> List[str]:
     """ Convert a list of groups to a list of principals """
     return [group_to_principal(g) for g in groups]
 
@@ -84,9 +121,10 @@ class IAccessBackend(object):
         self.signing_key = signing_key
 
     @classmethod
-    def configure(cls, settings):
+    def configure(cls, settings) -> Dict[str, Any]:
         """ Configure the access backend with app settings """
-        rounds = int(settings.get("auth.rounds", DEFAULT_ROUNDS))
+        rounds = settings.get("auth.rounds")
+        scheme = settings.get("auth.scheme")
         return {
             "default_read": aslist(
                 settings.get("pypi.default_read", ["authenticated"])
@@ -96,16 +134,16 @@ class IAccessBackend(object):
             "cache_update": aslist(
                 settings.get("pypi.cache_update", ["authenticated"])
             ),
-            "pwd_context": get_pwd_context(rounds),
+            "pwd_context": get_pwd_context(scheme, rounds),
             "token_expiration": int(settings.get("auth.token_expire", ONE_WEEK)),
-            "signing_key": settings.get("auth.signing_key"),
+            "signing_key": get_environ_setting(settings, "auth.signing_key"),
         }
 
     @classmethod
     def postfork(cls, **kwargs):
         """ This method will be called after uWSGI forks """
 
-    def allowed_permissions(self, package):
+    def allowed_permissions(self, package: str) -> Dict[str, Tuple[str, ...]]:
         """
         Get all allowed permissions for all principals on a package
 
@@ -116,10 +154,10 @@ class IAccessBackend(object):
 
         """
         all_perms = {}
-        for user, perms in six.iteritems(self.user_permissions(package)):
+        for user, perms in self.user_permissions(package).items():
             all_perms["user:" + user] = tuple(perms)
 
-        for group, perms in six.iteritems(self.group_permissions(package)):
+        for group, perms in self.group_permissions(package).items():
             all_perms[group_to_principal(group)] = tuple(perms)
 
         # If there are no group or user specifications for the package, use the
@@ -139,16 +177,16 @@ class IAccessBackend(object):
                 all_perms[principal] += ("fallback",)
         return all_perms
 
-    def get_acl(self, package):
+    def get_acl(self, package: str) -> List[Tuple[str, str, str]]:
         """ Construct an ACL for a package """
         acl = []
         permissions = self.allowed_permissions(package)
-        for principal, perms in six.iteritems(permissions):
+        for principal, perms in permissions.items():
             for perm in perms:
                 acl.append((Allow, principal, perm))
         return acl
 
-    def has_permission(self, package, perm):
+    def has_permission(self, package: str, perm: str) -> bool:
         """ Check if this user has a permission for a package """
         current_userid = self.request.userid
         if current_userid is not None and self.is_admin(current_userid):
@@ -160,7 +198,7 @@ class IAccessBackend(object):
                 return True
         return False
 
-    def user_principals(self, username):
+    def user_principals(self, username: str) -> List[str]:
         """
         Get a list of principals for a user
 
@@ -180,7 +218,7 @@ class IAccessBackend(object):
             principals.append("group:" + group)
         return principals
 
-    def in_group(self, username, group):
+    def in_group(self, username: str, group: str) -> bool:
         """
         Find out if a user is in a group
 
@@ -208,7 +246,7 @@ class IAccessBackend(object):
         else:
             return group in self.groups(username)
 
-    def in_any_group(self, username, groups):
+    def in_any_group(self, username: str, groups: List[str]) -> bool:
         """
         Find out if a user is in any of a set of groups
 
@@ -227,13 +265,13 @@ class IAccessBackend(object):
         """
         return any((self.in_group(username, group) for group in groups))
 
-    def can_update_cache(self):
+    def can_update_cache(self) -> bool:
         """
         Return True if the user has permissions to update the pypi cache
         """
         return self.in_any_group(self.request.userid, self.cache_update)
 
-    def need_admin(self):
+    def need_admin(self) -> bool:
         """
         Find out if there are any admin users
 
@@ -248,7 +286,7 @@ class IAccessBackend(object):
         """
         return False
 
-    def allow_register(self):
+    def allow_register(self) -> bool:
         """
         Check if the backend allows registration
 
@@ -261,7 +299,7 @@ class IAccessBackend(object):
         """
         return False
 
-    def allow_register_token(self):
+    def allow_register_token(self) -> bool:
         """
         Check if the backend allows registration via tokens
 
@@ -274,7 +312,7 @@ class IAccessBackend(object):
         """
         return False
 
-    def verify_user(self, username, password):
+    def verify_user(self, username: str, password: str) -> bool:
         """
         Check the login credentials of a user
 
@@ -299,11 +337,11 @@ class IAccessBackend(object):
                 return False
         return bool(stored_pw and self.pwd_context.verify(password, stored_pw))
 
-    def _get_password_hash(self, username):
+    def _get_password_hash(self, username: str) -> str:
         """ Get the stored password hash for a user """
         raise NotImplementedError
 
-    def groups(self, username=None):
+    def groups(self, username: Optional[str] = None) -> List[str]:
         """
         Get a list of all groups
 
@@ -321,7 +359,7 @@ class IAccessBackend(object):
         """
         raise NotImplementedError
 
-    def group_members(self, group):
+    def group_members(self, group: str) -> List[str]:
         """
         Get a list of users that belong to a group
 
@@ -337,7 +375,7 @@ class IAccessBackend(object):
         """
         raise NotImplementedError
 
-    def is_admin(self, username):
+    def is_admin(self, username: str) -> bool:
         """
         Check if the user is an admin
 
@@ -352,7 +390,7 @@ class IAccessBackend(object):
         """
         raise NotImplementedError
 
-    def group_permissions(self, package):
+    def group_permissions(self, package: str) -> Dict[str, List[str]]:
         """
         Get a mapping of all groups to their permissions on a package
 
@@ -371,7 +409,7 @@ class IAccessBackend(object):
         """
         raise NotImplementedError
 
-    def user_permissions(self, package):
+    def user_permissions(self, package: str) -> Dict[str, List[str]]:
         """
         Get a mapping of all users to their permissions for a package
 
@@ -389,7 +427,7 @@ class IAccessBackend(object):
         """
         raise NotImplementedError
 
-    def user_package_permissions(self, username):
+    def user_package_permissions(self, username: str) -> List[Dict[str, List[str]]]:
         """
         Get a list of all packages that a user has permissions on
 
@@ -406,7 +444,7 @@ class IAccessBackend(object):
         """
         raise NotImplementedError
 
-    def group_package_permissions(self, group):
+    def group_package_permissions(self, group: str) -> List[Dict[str, List[str]]]:
         """
         Get a list of all packages that a group has permissions on
 
@@ -440,7 +478,7 @@ class IAccessBackend(object):
         """
         raise NotImplementedError
 
-    def check_health(self):
+    def check_health(self) -> Tuple[bool, str]:
         """
         Check the health of the access backend
 
@@ -451,9 +489,9 @@ class IAccessBackend(object):
             status message
 
         """
-        return (True, "")
+        return True, ""
 
-    def dump(self):
+    def dump(self) -> Dict[str, Any]:
         """
         Dump all of the access control data to a universal format
 
@@ -464,7 +502,7 @@ class IAccessBackend(object):
         """
         from pypicloud import __version__
 
-        data = {}
+        data = {}  # type: Dict[str, Any]
         data["allow_register"] = self.allow_register()
         data["version"] = __version__
 
@@ -474,7 +512,10 @@ class IAccessBackend(object):
             user["password"] = self._get_password_hash(user["username"])
 
         data["groups"] = {}
-        packages = {"users": defaultdict(dict), "groups": defaultdict(dict)}
+        packages = {
+            "users": defaultdict(dict),
+            "groups": defaultdict(dict),
+        }  # type: Dict[str, Any]
         for group in groups:
             data["groups"][group] = self.group_members(group)
             perms = self.group_package_permissions(group)
@@ -522,13 +563,13 @@ class IMutableAccessBackend(IAccessBackend):
 
     mutable = True
 
-    def need_admin(self):
+    def need_admin(self) -> bool:
         for user in self.user_data():
             if user["admin"]:
                 return False
         return True
 
-    def get_signup_token(self, username):
+    def get_signup_token(self, username: str) -> str:
         """
         Create a signup token
 
@@ -545,7 +586,7 @@ class IMutableAccessBackend(IAccessBackend):
         msg, signature = self._hmac(username, time.time())
         return msg + ":" + signature
 
-    def _hmac(self, username, timestamp):
+    def _hmac(self, username: str, timestamp: float) -> Tuple[str, str]:
         """ HMAC a username/expiration combo """
         if self.signing_key is None:
             raise RuntimeError("auth.signing_key is not set!")
@@ -557,7 +598,7 @@ class IMutableAccessBackend(IAccessBackend):
             ).hexdigest(),
         )
 
-    def validate_signup_token(self, token):
+    def validate_signup_token(self, token: str) -> Optional[str]:
         """
         Validate a signup token
 
@@ -581,11 +622,9 @@ class IMutableAccessBackend(IAccessBackend):
             return None
         _, expected = self._hmac(username, issued)
         if hasattr(hmac, "compare_digest"):
-            if isinstance(signature, six.text_type):
-                signature = signature.encode("utf-8")
-            if isinstance(expected, six.text_type):
-                expected = expected.encode("utf-8")
-            if not hmac.compare_digest(signature, expected):
+            if not hmac.compare_digest(
+                signature.encode("utf-8"), expected.encode("utf-8")
+            ):
                 return None
         else:
             if signature != expected:
@@ -598,7 +637,7 @@ class IMutableAccessBackend(IAccessBackend):
     def allow_register_token(self):
         return self.signing_key is not None
 
-    def set_allow_register(self, allow):
+    def set_allow_register(self, allow: bool) -> None:
         """
         Allow or disallow user registration
 
@@ -609,7 +648,7 @@ class IMutableAccessBackend(IAccessBackend):
         """
         raise NotImplementedError
 
-    def register(self, username, password):
+    def register(self, username: str, password: str) -> None:
         """
         Register a new user
 
@@ -624,7 +663,7 @@ class IMutableAccessBackend(IAccessBackend):
         """
         self._register(username, self.pwd_context.hash(password))
 
-    def _register(self, username, password):
+    def _register(self, username: str, password: str) -> None:
         """
         Register a new user
 
@@ -639,7 +678,7 @@ class IMutableAccessBackend(IAccessBackend):
         """
         raise NotImplementedError
 
-    def pending_users(self):
+    def pending_users(self) -> List[str]:
         """
         Retrieve a list of all users pending admin approval
 
@@ -651,7 +690,7 @@ class IMutableAccessBackend(IAccessBackend):
         """
         raise NotImplementedError
 
-    def approve_user(self, username):
+    def approve_user(self, username: str) -> None:
         """
         Mark a user as approved by the admin
 
@@ -662,7 +701,7 @@ class IMutableAccessBackend(IAccessBackend):
         """
         raise NotImplementedError
 
-    def edit_user_password(self, username, password):
+    def edit_user_password(self, username: str, password: str) -> None:
         """
         Change a user's password
 
@@ -674,7 +713,7 @@ class IMutableAccessBackend(IAccessBackend):
         """
         self._set_password_hash(username, self.pwd_context.hash(password))
 
-    def _set_password_hash(self, username, password_hash):
+    def _set_password_hash(self, username: str, password_hash: str) -> None:
         """
         Change a user's password
 
@@ -687,7 +726,7 @@ class IMutableAccessBackend(IAccessBackend):
         """
         raise NotImplementedError
 
-    def delete_user(self, username):
+    def delete_user(self, username: str) -> None:
         """
         Delete a user
 
@@ -698,7 +737,7 @@ class IMutableAccessBackend(IAccessBackend):
         """
         raise NotImplementedError
 
-    def set_user_admin(self, username, admin):
+    def set_user_admin(self, username: str, admin: bool) -> None:
         """
         Grant or revoke admin permissions for a user
 
@@ -711,7 +750,7 @@ class IMutableAccessBackend(IAccessBackend):
         """
         raise NotImplementedError
 
-    def edit_user_group(self, username, group, add):
+    def edit_user_group(self, username: str, group: str, add: bool) -> None:
         """
         Add or remove a user to/from a group
 
@@ -725,7 +764,7 @@ class IMutableAccessBackend(IAccessBackend):
         """
         raise NotImplementedError
 
-    def create_group(self, group):
+    def create_group(self, group: str) -> None:
         """
         Create a new group
 
@@ -736,7 +775,7 @@ class IMutableAccessBackend(IAccessBackend):
         """
         raise NotImplementedError
 
-    def delete_group(self, group):
+    def delete_group(self, group: str) -> None:
         """
         Delete a group
 
@@ -747,7 +786,9 @@ class IMutableAccessBackend(IAccessBackend):
         """
         raise NotImplementedError
 
-    def edit_user_permission(self, package, username, perm, add):
+    def edit_user_permission(
+        self, package: str, username: str, perm: Set[str], add: bool
+    ) -> None:
         """
         Grant or revoke a permission for a user on a package
 
@@ -762,7 +803,9 @@ class IMutableAccessBackend(IAccessBackend):
         """
         raise NotImplementedError
 
-    def edit_group_permission(self, package, group, perm, add):
+    def edit_group_permission(
+        self, package: str, group: str, perm: Set[str], add: bool
+    ) -> None:
         """
         Grant or revoke a permission for a group on a package
 
@@ -799,7 +842,7 @@ class IMutableAccessBackend(IAccessBackend):
                 self.approve_user(user["username"])
             self.set_user_admin(user["username"], user.get("admin", False))
 
-        for group, members in six.iteritems(data["groups"]):
+        for group, members in data["groups"].items():
             if not self.group_members(group):
                 self.create_group(group)
             current_members = self.group_members(group)
@@ -811,13 +854,13 @@ class IMutableAccessBackend(IAccessBackend):
             if not user_exists(user["username"]):
                 self._register(user["username"], user["password"])
 
-        for package, groups in six.iteritems(data["packages"]["groups"]):
-            for group, permissions in six.iteritems(groups):
+        for package, groups in data["packages"]["groups"].items():
+            for group, permissions in groups.items():
                 for perm in permissions:
                     self.edit_group_permission(package, group, perm, True)
 
-        for package, users in six.iteritems(data["packages"]["users"]):
-            for user, permissions in six.iteritems(users):
+        for package, users in data["packages"]["users"].items():
+            for user, permissions in users.items():
                 for perm in permissions:
                     self.edit_user_permission(package, user, perm, True)
 

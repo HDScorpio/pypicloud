@@ -1,14 +1,15 @@
 """ Store packages as files on disk """
 import json
-from datetime import datetime
-from contextlib import closing
+import os
 from binascii import hexlify
+from contextlib import closing
+from datetime import datetime
 
 from pyramid.response import FileResponse
 
-import os
-from .base import IStorage
 from pypicloud.models import Package
+
+from .base import IStorage
 
 
 class FileStorage(IStorage):
@@ -82,9 +83,8 @@ class FileStorage(IStorage):
         # Store metadata as JSON. This could be expanded in the future
         # to store additional metadata about a package (i.e. author)
         tempfile = os.path.join(destdir, ".metadata." + uid)
-        metadata = {"summary": package.summary}
         with open(tempfile, "w") as mfile:
-            json.dump(metadata, mfile)
+            json.dump(package.get_metadata(), mfile)
 
         os.rename(tempfile, dest_meta_file)
 

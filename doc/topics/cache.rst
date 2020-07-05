@@ -21,7 +21,6 @@ The database url to use for the caching database. Should be a `SQLAlchemy url
 <http://docs.sqlalchemy.org/en/rel_0_9/core/engines.html>`_
 
 * sqlite: ``sqlite:///%(here)s/db.sqlite``
-* sqlite (in-memory): ``sqlite://``
 * mysql: ``mysql://root@127.0.0.1:3306/pypi?charset=utf8mb4``
 * postgres: ``postgresql://postgres@127.0.0.1:5432/postgres``
 
@@ -69,6 +68,21 @@ Set ``pypi.db = dynamo`` OR ``pypi.db = pypicloud.cache.dynamo.DynamoCache``
   Make sure to ``pip install pypicloud[dynamo]`` before running the server to
   install the necessary DynamoDB libraries. Also, be sure you have set the
   correct :ref:`dynamodb_policy`.
+
+.. note::
+
+   Pypicloud will create the DynamoDB tables if none exist. By default the
+   tables will be named ``pypicloud-DynamoPackage`` and
+   ``pypicloud-PackageSummary`` (this can be configured with ``db.namespace``
+   and ``db.tablenames``). You may create and configure these tables yourself as
+   long as they have the same schema.
+
+.. warning::
+
+   When you reload the cache from the admin interface, the default behavior will
+   drop the DynamoDB tables and re-create them. If you have configured the
+   tables to have server-side encryption, or customized the throughput, you may
+   find this undesirable. To avoid this, set ``db.graceful_reload = true``
 
 ``db.region_name``
 ~~~~~~~~~~~~~~~~~~

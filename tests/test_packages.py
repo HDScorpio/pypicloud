@@ -1,8 +1,9 @@
 """ Unit tests for the packages endpoints """
 from mock import MagicMock
 
-from . import MockServerTest
 from pypicloud.views.packages import list_packages
+
+from . import MockServerTest
 
 
 class TestPackages(MockServerTest):
@@ -29,6 +30,7 @@ class TestPackages(MockServerTest):
                 p = MagicMock()
                 p.filename = package_name
                 p.get_url.return_value = package_name + ".ext"
+                p.data = {}
                 return p
 
             d = {
@@ -40,5 +42,34 @@ class TestPackages(MockServerTest):
 
         self.request.db.all.side_effect = get_packages
         result = list_packages(self.request)
-        expected = {"b0": "b0.ext", "c0": "c0.ext", "c1": "c1.ext", "c2": "c2.ext"}
+        expected = {
+            "b0": {
+                "requires_python": None,
+                "hash_sha256": None,
+                "hash_md5": None,
+                "non_hashed_url": "b0.ext",
+                "url": "b0.ext",
+            },
+            "c0": {
+                "requires_python": None,
+                "hash_sha256": None,
+                "hash_md5": None,
+                "non_hashed_url": "c0.ext",
+                "url": "c0.ext",
+            },
+            "c1": {
+                "requires_python": None,
+                "hash_sha256": None,
+                "hash_md5": None,
+                "non_hashed_url": "c1.ext",
+                "url": "c1.ext",
+            },
+            "c2": {
+                "requires_python": None,
+                "hash_sha256": None,
+                "hash_md5": None,
+                "non_hashed_url": "c2.ext",
+                "url": "c2.ext",
+            },
+        }
         self.assertEqual(result, {"pkgs": expected})

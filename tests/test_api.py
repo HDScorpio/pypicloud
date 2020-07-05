@@ -1,9 +1,12 @@
 """ Tests for API endpoints """
+from io import BytesIO
+
 from mock import MagicMock, patch
 from pyramid.httpexceptions import HTTPBadRequest, HTTPForbidden
 
-from . import MockServerTest, make_package
 from pypicloud.views import api
+
+from . import MockServerTest, make_dist, make_package
 
 
 class TestApi(MockServerTest):
@@ -19,14 +22,14 @@ class TestApi(MockServerTest):
     def test_list_packages(self):
         """ List all packages """
         p1 = make_package()
-        self.db.upload(p1.filename, None)
+        self.db.upload(p1.filename, BytesIO(b"test1234"))
         pkgs = api.all_packages(self.request)
         self.assertEqual(pkgs["packages"], [p1.name])
 
     def test_list_packages_no_perm(self):
         """ If no read permission, package not in all_packages """
         p1 = make_package()
-        self.db.upload(p1.filename, None)
+        self.db.upload(p1.filename, BytesIO(b"test1234"))
         self.access.has_permission.return_value = False
         pkgs = api.all_packages(self.request)
         self.assertEqual(pkgs["packages"], [])
@@ -34,7 +37,7 @@ class TestApi(MockServerTest):
     def test_list_packages_verbose(self):
         """ List all package data """
         p1 = make_package()
-        p1 = self.db.upload(p1.filename, None)
+        p1 = self.db.upload(p1.filename, BytesIO(b"test1234"))
         pkgs = api.all_packages(self.request, True)
         self.assertEqual(
             pkgs["packages"],
@@ -156,11 +159,18 @@ class TestApi(MockServerTest):
         fetch_dist.return_value = (MagicMock(), MagicMock())
         context = MagicMock()
         context.filename = "package.tar.gz"
-        dist = MagicMock()
         url = "https://pypi.org/simple/%s" % context.filename
-        locator.get_project.return_value = {"0.1": dist, "urls": {"0.1": set([url])}}
+        dist = make_dist(url=url)
+        locator.get_releases.return_value = [dist]
         ret = api.download_package(context, self.request)
-        fetch_dist.assert_called_with(self.request, dist.name, url)
+        fetch_dist.assert_called_with(
+            self.request,
+            dist["url"],
+            dist["name"],
+            dist["version"],
+            dist["summary"],
+            dist["requires_python"],
+        )
         self.assertEqual(ret.body, fetch_dist()[1])
         ret.headers.update.assert_any_call([("Cache-Control", "public, max-age=0")])
 
@@ -177,27 +187,10 @@ class TestApi(MockServerTest):
         fetch_dist.return_value = (MagicMock(), MagicMock())
         context = MagicMock()
         context.filename = "package.tar.gz"
-        dist = MagicMock()
         url = "https://pypi.org/simple/%s" % context.filename
-        locator.get_project.return_value = {"0.1": dist, "urls": {"0.1": set([url])}}
+        dist = make_dist(url=url)
+        locator.get_releases.return_value = [dist]
         ret = api.download_package(context, self.request)
-        fetch_dist.assert_called_with(self.request, dist.name, url)
+        fetch_dist.assert_called_once()
         self.assertEqual(ret.body, fetch_dist()[1])
         ret.headers.update.assert_any_call([("Cache-Control", "public, max-age=30")])
-
-    def test_fetch_requirements_no_perm(self):
-        """ Fetching requirements without perms returns 403 """
-        self.request.access.can_update_cache.return_value = False
-        requirements = "requests>=2.0"
-        ret = api.fetch_requirements(self.request, requirements)
-        self.assertEqual(ret.status_code, 403)
-
-    @patch("pypicloud.views.api.fetch_dist")
-    def test_fetch_requirements(self, fetch_dist):
-        """ Fetching requirements without perms returns 403 """
-        requirements = "requests>=2.0"
-        locator = self.request.locator = MagicMock()
-        ret = api.fetch_requirements(self.request, requirements)
-        dist = locator.locate()
-        fetch_dist.assert_called_with(self.request, dist.name, dist.source_url)
-        self.assertEqual(ret, {"pkgs": [fetch_dist()[0]]})

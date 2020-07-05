@@ -1,33 +1,33 @@
 # -*- coding: utf-8 -*-
 """ Tests for package storage backends """
-import json
-import time
 import datetime
-from six import BytesIO
-
-import shutil
-import tempfile
-from mock import MagicMock, patch, ANY
-from moto import mock_s3
-from six.moves.urllib.parse import urlparse, parse_qs  # pylint: disable=F0401,E0611
-
-import boto3
+import json
 import os
 import re
+import shutil
+import sys
+import tempfile
+import time
+import unittest
+from io import BytesIO
+from urllib.parse import parse_qs, urlparse
+
+import boto3
+import vcr
 from botocore.exceptions import ClientError
+from mock import ANY, MagicMock, patch
+from moto import mock_s3
+
 from pypicloud.models import Package
 from pypicloud.storage import (
-    S3Storage,
     CloudFrontS3Storage,
     FileStorage,
     GoogleCloudStorage,
+    S3Storage,
+    get_storage_impl,
 )
-from . import make_package
 
-try:
-    import unittest2 as unittest  # pylint: disable=F0401
-except ImportError:
-    import unittest
+from . import make_package
 
 
 class TestS3Storage(unittest.TestCase):
@@ -106,7 +106,7 @@ class TestS3Storage(unittest.TestCase):
 
     def test_upload(self):
         """ Uploading package sets metadata and sends to S3 """
-        package = make_package()
+        package = make_package(requires_python="3.6")
         datastr = b"foobar"
         data = BytesIO(datastr)
         self.storage.upload(package, data)
@@ -117,6 +117,7 @@ class TestS3Storage(unittest.TestCase):
         self.assertEqual(key.metadata["name"], package.name)
         self.assertEqual(key.metadata["version"], package.version)
         self.assertEqual(key.metadata["summary"], package.summary)
+        self.assertDictContainsSubset(package.get_metadata(), key.metadata)
 
     def test_upload_prepend_hash(self):
         """ If prepend_hash = True, attach a hash to the file path """
@@ -294,7 +295,7 @@ class TestFileStorage(unittest.TestCase):
 
     def test_upload(self):
         """ Uploading package saves file """
-        package = make_package()
+        package = make_package(requires_python="3.6")
         datastr = b"foobar"
         data = BytesIO(datastr)
         self.storage.upload(package, data)
@@ -305,7 +306,7 @@ class TestFileStorage(unittest.TestCase):
         meta_file = self.storage.get_metadata_path(package)
         self.assertTrue(os.path.exists(meta_file))
         with open(meta_file, "r") as mfile:
-            self.assertEqual(json.loads(mfile.read()), {"summary": package.summary})
+            self.assertEqual(json.loads(mfile.read()), package.get_metadata())
 
     def test_list(self):
         """ Can iterate over uploaded packages """
@@ -547,7 +548,7 @@ class TestGoogleCloudStorage(unittest.TestCase):
 
     def test_upload(self):
         """ Uploading package sets metadata and sends to S3 """
-        package = make_package()
+        package = make_package(requires_python="3.6")
         datastr = b"foobar"
         data = BytesIO(datastr)
         self.storage.upload(package, data)
@@ -558,7 +559,7 @@ class TestGoogleCloudStorage(unittest.TestCase):
         self.assertEqual(blob._content, datastr)
         self.assertEqual(blob.metadata["name"], package.name)
         self.assertEqual(blob.metadata["version"], package.version)
-        self.assertEqual(blob.metadata["summary"], package.summary)
+        self.assertDictContainsSubset(package.get_metadata(), blob.metadata)
 
         self.assertEqual(self.bucket.create.call_count, 0)
 
@@ -623,3 +624,85 @@ class TestGoogleCloudStorage(unittest.TestCase):
             {"storage.bucket": "new_bucket", "storage.region_name": "us-east-1"}
         )
         GoogleCloudStorage(MagicMock(), **kwargs)
+
+
+class TestAzureStorage(unittest.TestCase):
+    """ Tests for storing packages in Azure Blob Storage """
+
+    @classmethod
+    def setUpClass(cls):
+        super(TestAzureStorage, cls).setUpClass()
+        if sys.version_info.major < 3 or sys.version_info.minor < 6:
+            raise unittest.SkipTest("vcrpy does not work on < 3.6 :(")
+
+    def setUp(self):
+        super(TestAzureStorage, self).setUp()
+        self.settings = {
+            "pypi.storage": "azure-blob",
+            "storage.storage_account_name": "terrytest2",
+            "storage.storage_account_key": "Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa==",
+            "storage.storage_container_name": "pypi",
+        }
+        storage_func = get_storage_impl(self.settings)
+        self.storage = storage_func(MagicMock())
+
+    def test_list_and_upload(self):
+        """List packages from blob storage"""
+        with vcr.use_cassette(
+            "tests/vcr_cassettes/test_list.yaml", filter_headers=["authorization"]
+        ):
+            package = make_package("mypkg", "1.2", "pkg.tar.gz", summary="test")
+            self.storage.upload(package, BytesIO(b"test1234"))
+
+            package = list(self.storage.list(Package))[0]
+            self.assertEqual(package.name, "mypkg")
+            self.assertEqual(package.version, "1.2")
+            self.assertEqual(package.filename, "pkg.tar.gz")
+            self.assertEqual(package.summary, "test")
+
+    def test_get_url(self):
+        """Test presigned url generation"""
+        package = make_package()
+        response = self.storage.download_response(package)
+
+        parts = urlparse(response.location)
+        self.assertEqual(parts.scheme, "https")
+        self.assertEqual(parts.hostname, "terrytest2.blob.core.windows.net")
+        self.assertEqual(
+            parts.path,
+            "/"
+            + self.settings["storage.storage_container_name"]
+            + "/"
+            + self.storage.get_path(package),
+        )
+        query = parse_qs(parts.query)
+        self.assertItemsEqual(query.keys(), ["se", "sp", "spr", "sv", "sr", "sig"])
+
+    def test_delete(self):
+        """ delete() should remove package from storage """
+        with vcr.use_cassette(
+            "tests/vcr_cassettes/test_delete.yaml", filter_headers=["authorization"]
+        ):
+            package = make_package()
+            self.storage.upload(package, BytesIO())
+            self.storage.delete(package)
+            packages = list(self.storage.list(Package))
+            self.assertEqual(len(packages), 0)
+
+    def test_check_health_success(self):
+        """ check_health returns True for good connection """
+        with vcr.use_cassette(
+            "tests/vcr_cassettes/test_check.yaml", filter_headers=["authorization"]
+        ):
+            ok, msg = self.storage.check_health()
+            self.assertTrue(ok)
+
+    def test_check_health_fail(self):
+        """ check_health returns False for bad connection """
+        with vcr.use_cassette(
+            "tests/vcr_cassettes/test_check_fail.yaml",
+            filter_headers=["authorization"],
+            record_mode="none",
+        ):
+            ok, msg = self.storage.check_health()
+            self.assertFalse(ok)

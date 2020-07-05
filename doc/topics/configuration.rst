@@ -54,6 +54,20 @@ https://pypi.org/simple)
 This takes precendence over ``pypi.fallback`` by causing redirects to go to:
 ``pypi.fallback_base_url/<simple|pypi>``. (default https://pypi.org)
 
+``pypi.use_json_scraper``
+~~~~~~~~~~~~~~~~~~~~~~~~~
+**Argument:** bool, optional
+
+There are two methods pypicloud uses to fetch package data from the fallback
+repo. The JSON scraper, and `distlib <https://pypi.org/project/distlib/>`__.
+Distlib has an issue where it does not return the "Requires-Python" metadata,
+which can cause installation problems (see :issue:`219`). If you are using a
+non-standard fallback that *supports* the ``/json`` endpoints (e.g.
+https://pypi.org/pypi/pypicloud/json), you may wish to set this to ``true`` so
+that you get the proper "Requires-Python" metadata.
+
+Will default to true if ``pypi.fallback_base_url`` is not set, or is set to ``https://pypi.org``.
+
 ``pypi.disallow_fallback``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 **Argument:** list, optional
@@ -83,6 +97,15 @@ group permissions (default no groups, only admin users)
 Only used when ``pypi.fallback = cache``. This is
 the list of groups that are allowed to trigger the operation that fetches
 packages from ``fallback_base_url``.  (default ['authenticated'])
+
+``pypi.calculate_package_hashes``
+**Argument:** bool, optional
+
+Package SHA256 and MD5 hashes are now calculated by default when a package is
+uploaded. This option enables or disables the hash calculation (default true)
+
+Scripts to calculate hashes on existing packages exist here:
+https://github.com/stevearc/pypicloud/tree/master/scripts
 
 ``pypi.allow_overwrite``
 ~~~~~~~~~~~~~~~~~~~~~~~~

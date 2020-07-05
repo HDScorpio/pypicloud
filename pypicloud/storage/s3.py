@@ -1,29 +1,23 @@
 """ Store packages in S3 """
-from __future__ import unicode_literals
+import logging
 import posixpath
-import unicodedata
+from datetime import datetime, timedelta
+from urllib.parse import quote, urlparse
 
 import boto3
-import logging
 from botocore.config import Config
-from botocore.signers import CloudFrontSigner
 from botocore.exceptions import ClientError
-
-from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.primitives import serialization
+from botocore.signers import CloudFrontSigner
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import hashes
-
-from datetime import datetime, timedelta
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 from pyramid.settings import asbool, falsey
 from pyramid_duh.settings import asdict
-from six.moves.urllib.parse import urlparse, quote  # pylint: disable=F0401,E0611
-import six
+
+from pypicloud.models import Package
+from pypicloud.util import get_settings, normalize_metadata, parse_filename
 
 from .object_store import ObjectStoreStorage
-from pypicloud.models import Package
-from pypicloud.util import parse_filename, get_settings
-
 
 LOG = logging.getLogger(__name__)
 
@@ -127,7 +121,7 @@ class S3Storage(ObjectStoreStorage):
         filename = posixpath.basename(obj.key)
         name = obj.metadata.get("name")
         version = obj.metadata.get("version")
-        summary = obj.metadata.get("summary")
+        metadata = Package.read_metadata(obj.metadata)
         # We used to not store metadata. This is for backwards
         # compatibility
         if name is None or version is None:
@@ -138,7 +132,7 @@ class S3Storage(ObjectStoreStorage):
                 return None
 
         return factory(
-            name, version, filename, obj.last_modified, summary, path=obj.key
+            name, version, filename, obj.last_modified, path=obj.key, **metadata
         )
 
     def list(self, factory=Package):
@@ -197,15 +191,10 @@ class S3Storage(ObjectStoreStorage):
             kwargs["ACL"] = self.object_acl
         if self.storage_class is not None:
             kwargs["StorageClass"] = self.storage_class
-        metadata = {"name": package.name, "version": package.version}
-        if package.summary:
-            if isinstance(package.summary, six.text_type):
-                summary = package.summary
-            else:
-                summary = package.summary.decode("utf-8")
-            metadata["summary"] = "".join(
-                c for c in unicodedata.normalize("NFKD", summary) if ord(c) < 128
-            )
+        metadata = package.get_metadata()
+        metadata["name"] = package.name
+        metadata["version"] = package.version
+        normalize_metadata(metadata)
         key.put(Metadata=metadata, Body=datastream, **kwargs)
 
     def delete(self, package):

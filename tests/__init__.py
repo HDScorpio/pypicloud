@@ -1,11 +1,9 @@
 """ Tests for pypicloud """
-from __future__ import unicode_literals
-
 import os
-import six
 import unittest
 from collections import defaultdict
 from datetime import datetime
+
 from mock import MagicMock
 from pyramid.testing import DummyRequest
 
@@ -14,9 +12,7 @@ from pypicloud.cache import ICache
 from pypicloud.models import Package
 from pypicloud.storage import IStorage
 
-
-if six.PY3:
-    unittest.TestCase.assertItemsEqual = unittest.TestCase.assertCountEqual
+unittest.TestCase.assertItemsEqual = unittest.TestCase.assertCountEqual
 
 
 os.environ["AWS_SECRET_ACCESS_KEY"] = "access_key"
@@ -39,6 +35,25 @@ def make_package(
     )
 
 
+def make_dist(
+    url=None,
+    name="mypkg",
+    version="1.0",
+    summary="A package summary",
+    requires_python=">=3.5",
+    digests=None,
+):
+    url = url or "https://pypi.org/pypi/%s/%s-%s.tar.gz" % (name, name, version)
+    return {
+        "name": name,
+        "version": version,
+        "url": url,
+        "summary": summary,
+        "requires_python": requires_python,
+        "digests": digests or {},
+    }
+
+
 class DummyStorage(IStorage):
 
     """ In-memory implementation of IStorage """
@@ -49,7 +64,7 @@ class DummyStorage(IStorage):
 
     def list(self, factory=Package):
         """ Return a list or generator of all packages """
-        for args in six.itervalues(self.packages):
+        for args in self.packages.values():
             yield args[0]
 
     def download_response(self, package):
@@ -80,11 +95,11 @@ class DummyCache(ICache):
 
     def all(self, name):
         """ Override this method to implement 'all' """
-        return [p for p in six.itervalues(self.packages) if p.name == name]
+        return [p for p in self.packages.values() if p.name == name]
 
     def distinct(self):
         """ Get all distinct package names """
-        return list(set((p.name for p in six.itervalues(self.packages))))
+        return list(set((p.name for p in self.packages.values())))
 
     def clear(self, package):
         """ Remove this package from the caching database """
